@@ -1,0 +1,431 @@
+CREATE OR ALTER PROC SP_DATAMASKING
+(@DatabaseName NVARCHAR(30),
+@Confirm bit = 0,
+ @Mode NVARCHAR(30),
+  @SchemaName NVARCHAR(128) = NULL,
+  @TableName NVARCHAR(128) = NULL,       -- Optional: Specify table if targeting specific table
+  @SelectedColumns NVARCHAR(MAX) = NULL, -- Must be 'ALL' to mask all PII columns, or a comma-separated list. For Drop, 'DROPALL' to drop all masking from all columns in the database. 
+  @Verbose BIT = 1
+)
+AS
+/*
+DECLARE @DatabaseName NVARCHAR(30) = 'testdb';
+DECLARE @Confirm bit = 1; -- 1 for confirm
+DECLARE @Mode NVARCHAR(30);  
+DECLARE @SchemaName NVARCHAR(128) = NULL;      -- Optional: Specify schema if targeting specific table
+DECLARE @TableName NVARCHAR(128) = NULL;       -- Optional: Specify table if targeting specific table
+DECLARE @SelectedColumns NVARCHAR(MAX) = NULL; -- Must be 'ALL' to mask all PII columns, or a comma-separated list
+DECLARE @Verbose BIT = 1                     ;  -- Optional: 1 for detailed output, 0 for minimal
+ --Declare @SQL3  NVARCHAR(MAX);
+ --Declare @SQL1  NVARCHAR(MAX);
+
+--TESTING /DEBUGGING
+--SET @Mode = 'Identify';
+--SET @Mode = 'maskedtables';
+--SET @Mode = 'mask';
+--SET @SelectedColumns = 'all'
+ */
+SET NOCOUNT ON;
+
+DECLARE @SQL1 NVARCHAR(MAX);	-- IDENTIFY
+Declare @SQL2  NVARCHAR(MAX);   -- MASKEDTABLES
+Declare @SQL3  NVARCHAR(MAX);   -- TO MASK
+Declare @SQL4  NVARCHAR(MAX);   -- DROP MASK
+
+IF @mode IS NULL
+BEGIN
+    PRINT '@Mode variable not supplied. Please choose ''Identify'' to identify tables in a database with sensitive (PII) columns, 
+''MaskedTables'' to see tables that have masking applied, or ''Mask'' to start the masking process.';
+END
+
+
+--if @mode = 'Identify'
+--Begin 
+
+Drop Table IF EXISTS ##TempColumnsMaster,  #T#empmaskedMaster
+
+-- Create a temp table in master
+CREATE TABLE ##TempColumnsMaster (
+    TABLE_SCHEMA NVARCHAR(128),
+    TABLE_NAME NVARCHAR(128),
+    COLUMN_NAME NVARCHAR(128),
+    DATA_TYPE NVARCHAR(128)
+);
+
+-- Construct the dynamic SQL string
+SET @sql1 = '
+USE ' + QUOTENAME(@databasename) + ';
+SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE  
+INTO #TempColumns
+FROM INFORMATION_SCHEMA.COLUMNS  
+WHERE COLUMN_NAME LIKE ''%ssn%''   
+   OR COLUMN_NAME LIKE ''%email%''   
+   OR COLUMN_NAME LIKE ''%phone%''  
+   OR COLUMN_NAME LIKE ''%credit%'';
+
+-- Insert the data from the temp table in admin to the one in master
+INSERT INTO ##TempColumnsMaster
+SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE 
+FROM #TempColumns;
+';
+
+-- Execute the dynamic SQL
+EXEC sp_executesql @sql1;
+ 
+ if @mode = 'Identify'
+ begin 
+-- Now you can use #TempColumnsMaster in the master database
+SELECT * FROM ##TempColumnsMaster;
+--declare @tlsch		Nvarchar(50) 
+--declare @tblname	Nvarchar(50)
+--declare @colname 	Nvarchar(50)
+--declare @stt nvarchar (1000)
+--SELECT @tlsch = TABLE_SCHEMA, @tblname = TABLE_NAME, @colname = COLUMN_NAME FROM #TempColumnsMaster;
+
+--Print 'The following table(s), Schema(s) and Column Name(s) were identified as sensitive:
+--' + @databasename + '.' + @tlsch + '.' + @tblname + '.'  + @colname
+ 
+-- Clean up
+DROP TABLE ##TempColumnsMaster;
+end 
+
+If @mode = 'maskedtables'
+
+begin
+
+Create table  ##TempmaskedMaster 
+(TableName nvarchar (50), 
+ColumnName nvarchar (50), 
+MaskingFunction nvarchar (500)
+);
+
+-- Construct the dynamic SQL string
+SET @sql2 = '
+USE ' + QUOTENAME(@databasename) + ';
+SELECT 
+ t.name AS TableName, 
+ c.name AS ColumnName, 
+ m.masking_function AS MaskingFunction
+ INTO #Tempmasked
+FROM 
+ sys.masked_columns AS m
+JOIN 
+ sys.columns AS c ON m.column_id = c.column_id AND m.object_id = c.object_id
+JOIN 
+ sys.tables AS t ON c.object_id = t.object_id;
+
+ -- Insert the data from the temp table in admin to the one in master
+INSERT INTO ##TempmaskedMaster
+SELECT TableName, ColumnName, MaskingFunction 
+FROM #Tempmasked;
+';
+-- Execute the dynamic SQL
+EXEC sp_executesql @sql2;
+
+select * from ##TempmaskedMaster
+
+-- Clean up
+DROP TABLE if exists ##TempmaskedMaster;
+END 
+
+IF @Mode = 'mask'
+begin 
+IF @confirm != 1
+begin 
+Print 'Please confirm this masking operation by inserting @Confirm = 1'
+end
+else 
+BEGIN
+    IF @SelectedColumns IS NULL
+    BEGIN
+        -- Warn the user to explicitly specify 'ALL' or list specific columns
+        PRINT 'WARNING: No columns specified. You must supply @SelectedColumns = ''ALL'' to mask all PII columns in the table or provide specific column names.';
+        RETURN;
+    END
+
+ ELSE IF UPPER(@SelectedColumns) = 'ALL'
+    BEGIN
+
+	-- Helper Table to Store Columns to Mask
+DECLARE @ColumnsToMask TABLE
+(
+    TABLE_SCHEMA NVARCHAR(128),
+    TABLE_NAME NVARCHAR(128),
+    COLUMN_NAME NVARCHAR(128),
+    DATA_TYPE NVARCHAR(128)
+);
+
+
+-- Mask all columns from ##TempColumnsMaster
+        INSERT INTO @ColumnsToMask  
+        SELECT *
+        FROM ##TempColumnsMaster
+        WHERE (@SchemaName IS NULL OR TABLE_SCHEMA = @SchemaName)
+          AND (@TableName IS NULL OR TABLE_NAME = @TableName);
+
+        -- Debug: Verify that the columns to mask table is populated
+        PRINT 'Contents of @ColumnsToMask:';
+        SELECT * FROM @ColumnsToMask;
+
+        IF @Verbose = 1
+        BEGIN
+            PRINT 'Masking all PII columns as per ##TempColumnsMaster.';
+        END
+    END
+    ELSE
+    BEGIN
+        -- Split @SelectedColumns and validate
+        DECLARE @Selected NVARCHAR(4000) = @SelectedColumns;
+        DECLARE @Delimiter CHAR(1) = ',';
+        DECLARE @Pos INT;
+        DECLARE @Token NVARCHAR(128);
+
+        -- Temporary table to hold split columns
+        DECLARE @TempSelected TABLE (ColumnName NVARCHAR(128));
+
+        -- Split the comma-separated list
+        WHILE CHARINDEX(@Delimiter, @Selected) > 0
+        BEGIN
+            SET @Pos = CHARINDEX(@Delimiter, @Selected);
+            SET @Token = LTRIM(RTRIM(SUBSTRING(@Selected, 1, @Pos - 1)));
+            INSERT INTO @TempSelected (ColumnName) VALUES (@Token);
+            SET @Selected = SUBSTRING(@Selected, @Pos + 1, LEN(@Selected) - @Pos);
+        END
+        -- Insert the last token
+        IF LEN(@Selected) > 0
+        BEGIN
+            SET @Token = LTRIM(RTRIM(@Selected));
+            INSERT INTO @TempSelected (ColumnName) VALUES (@Token);
+        END
+
+        -- Validate and populate @ColumnsToMask
+        INSERT INTO @ColumnsToMask  
+        SELECT tcm.TABLE_SCHEMA, tcm.TABLE_NAME, tcm.COLUMN_NAME, tcm.DATA_TYPE
+        FROM ##TempColumnsMaster tcm
+        INNER JOIN @TempSelected ts ON tcm.COLUMN_NAME = ts.ColumnName
+        WHERE (@SchemaName IS NULL OR tcm.TABLE_SCHEMA = @SchemaName)
+          AND (@TableName IS NULL OR tcm.TABLE_NAME = @TableName);
+
+        -- Check for non-existing columns
+        DECLARE @NonExistingColumns TABLE (ColumnName NVARCHAR(128));
+        INSERT INTO @NonExistingColumns (ColumnName)
+        SELECT ts.ColumnName
+        FROM @TempSelected ts
+        LEFT JOIN ##TempColumnsMaster tcm ON tcm.COLUMN_NAME = ts.ColumnName
+        WHERE tcm.COLUMN_NAME IS NULL
+          AND (@SchemaName IS NULL OR tcm.TABLE_SCHEMA = @SchemaName)
+          AND (@TableName IS NULL OR tcm.TABLE_NAME = @TableName);
+
+        IF EXISTS (SELECT 1 FROM @NonExistingColumns)
+        BEGIN
+            DECLARE @ErrorMsg NVARCHAR(MAX) = 'Error: The following columns do not exist in ##TempColumnsMaster: ';
+            SELECT @ErrorMsg = @ErrorMsg + STRING_AGG(ColumnName, ', ') 
+            FROM @NonExistingColumns;
+            RAISERROR(@ErrorMsg, 16, 1);
+            RETURN;
+        END
+
+        IF @Verbose = 1
+        BEGIN
+            PRINT 'Masking selected PII columns as specified by the user.';
+        END
+    END
+
+    -- Iterate through @ColumnsToMask and apply masking
+    DECLARE MaskCursor CURSOR FOR
+    SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE
+    FROM @ColumnsToMask;
+
+    OPEN MaskCursor;
+
+    DECLARE @CurrSchema NVARCHAR(128);
+    DECLARE @CurrTable NVARCHAR(128);
+    DECLARE @CurrColumn NVARCHAR(128);
+    DECLARE @CurrDataType NVARCHAR(128);
+    DECLARE @MaskFunction NVARCHAR(50);
+
+    FETCH NEXT FROM MaskCursor INTO @CurrSchema, @CurrTable, @CurrColumn, @CurrDataType;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Determine the masking function based on column name or datatype
+        IF LOWER(@CurrColumn) LIKE '%email%'
+            SET @MaskFunction = 'email()';
+        ELSE IF LOWER(@CurrColumn) LIKE '%phone%'
+            SET @MaskFunction = 'default()';
+        ELSE IF LOWER(@CurrColumn) LIKE '%ssn%'
+            SET @MaskFunction = 'default()';
+        ELSE IF LOWER(@CurrColumn) LIKE '%creditcard%'
+            SET @MaskFunction = 'partial(0,"XXXX-XXXX-XXXX-",4)';
+        ELSE
+            SET @MaskFunction = 'default()'; -- General masking
+declare @ADD CHAR(3) = 'ADD'
+        -- Construct the ALTER TABLE statement
+        SET @SQL3 = 'ALTER TABLE ' + @databasename + '.' + QUOTENAME(@CurrSchema) + '.' + QUOTENAME(@CurrTable) + 
+                   ' ALTER COLUMN ' + QUOTENAME(@CurrColumn) + ' ' + 
+                   @ADD + 
+                   ' MASKED WITH (FUNCTION = ''' + @MaskFunction + ''');';
+
+        -- Debugging Output
+        IF @Verbose = 1
+            PRINT 'Executing: ' + @SQL3;
+
+        -- Execute the masking command
+        BEGIN TRY
+            EXEC sp_executesql @SQL3;
+        END TRY
+        BEGIN CATCH
+            PRINT 'Error masking column: ' + @CurrSchema + '.' + @CurrTable + '.' + @CurrColumn + '. Error: ' + ERROR_MESSAGE();
+        END CATCH
+
+        -- Fetch next column
+        FETCH NEXT FROM MaskCursor INTO @CurrSchema, @CurrTable, @CurrColumn, @CurrDataType;
+    END
+
+    CLOSE MaskCursor;
+    DEALLOCATE MaskCursor;
+
+-- Clean up
+DROP TABLE if exists ##TempmaskedMaster;
+END 
+END
+
+ELSE 
+
+
+IF @Mode = 'DROP'
+BEGIN
+    -- Confirmation check
+    IF @Confirm != 1
+    BEGIN
+        PRINT 'Please confirm this masking drop operation by setting @Confirm = 1';
+        RETURN;
+    END
+
+   -- Construct the dynamic SQL string
+SET @SQL4 = '
+USE ' + QUOTENAME(@databaseName) + ';
+
+SELECT 
+    s.name AS TABLE_SCHEMA,
+    t.name AS TABLE_NAME,
+    c.name AS COLUMN_NAME
+FROM 
+    sys.masked_columns AS m
+JOIN 
+    sys.columns AS c ON m.column_id = c.column_id AND m.object_id = c.object_id
+JOIN 
+    sys.tables AS t ON c.object_id = t.object_id
+JOIN 
+    sys.schemas AS s ON t.schema_id = s.schema_id
+WHERE 1=1 ';
+
+-- Conditionally add schema and table filters
+IF @SchemaName IS NOT NULL
+    SET @SQL4 = @SQL4 + ' AND s.name = ' + QUOTENAME(@SchemaName, '''');
+
+IF @TableName IS NOT NULL
+    SET @SQL4 = @SQL4 + ' AND t.name = ' + QUOTENAME(@TableName, '''');
+
+-- Conditionally add column filters
+IF @SelectedColumns IS NOT NULL AND UPPER(@SelectedColumns) != 'DROPALL'
+BEGIN
+    -- Construct the IN clause by splitting the columns
+    SET @SQL4 = @SQL4 + ' AND c.name IN (';
+
+    -- Split the @SelectedColumns and append each column to the SQL string
+    DECLARE @Column NVARCHAR(128);
+    DECLARE @Pos2 INT = 1;
+    DECLARE @SplitList NVARCHAR(MAX) = @SelectedColumns;
+
+    WHILE CHARINDEX(',', @SplitList) > 0
+    BEGIN
+        SET @Column = LTRIM(RTRIM(SUBSTRING(@SplitList, 1, CHARINDEX(',', @SplitList) - 1)));
+        SET @SQL4 = @SQL4 + QUOTENAME(@Column, '''') + ', ';
+        SET @SplitList = SUBSTRING(@SplitList, CHARINDEX(',', @SplitList) + 1, LEN(@SplitList));
+    END
+
+    -- Append the last column in the list
+    SET @SQL4 = @SQL4 + QUOTENAME(LTRIM(RTRIM(@SplitList)), '''') + ')';
+END
+
+-- Debugging: Print the final SQL to verify correctness
+--PRINT @SQL4;
+
+-- Execute the dynamic SQL
+--EXEC sp_executesql @SQL4;
+
+-- Helper table to store columns that need unmasking
+    DECLARE @ColumnsToUnmask TABLE
+    (
+        TABLE_SCHEMA NVARCHAR(128),
+        TABLE_NAME NVARCHAR(128),
+        COLUMN_NAME NVARCHAR(128)
+    );
+
+-- Select all masked columns across the entire database
+        INSERT INTO @ColumnsToUnmask
+		EXEC sp_executesql @SQL4;
+
+		--select * from  @columnstounmask
+ -- Check if there are any columns to unmask
+    IF (SELECT COUNT(*) FROM @ColumnsToUnmask) = 0
+    BEGIN
+        PRINT 'No masked columns found to drop in the specified database/schema/table. Make sure the schema, table name and columns name are correct.';
+        RETURN;
+    END
+ELSE
+BEGIN
+	-- Iterate through @ColumnsToUnmask and drop masking
+    DECLARE UnmaskCursor CURSOR FOR
+    SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
+    FROM @ColumnsToUnmask;
+
+    OPEN UnmaskCursor;
+
+    DECLARE @CurrSchema2 NVARCHAR(128);
+    DECLARE @CurrTable2 NVARCHAR(128);
+    DECLARE @CurrColumn2 NVARCHAR(128);
+    DECLARE @SQLDrop NVARCHAR(MAX);
+
+    FETCH NEXT FROM UnmaskCursor INTO @CurrSchema, @CurrTable, @CurrColumn;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+
+        -- Construct the ALTER TABLE statement to drop masking
+        SET @SQLDrop = 'ALTER TABLE ' + @DATABASENAME + '.' + QUOTENAME(@CurrSchema) + '.' + QUOTENAME(@CurrTable) + 
+                       ' ALTER COLUMN ' + QUOTENAME(@CurrColumn) + ' DROP MASKED;';
+
+        -- Debugging Output
+        IF @Verbose = 1
+            PRINT 'Executing: ' + @SQLDrop;
+
+        -- Execute the unmasking command
+        BEGIN TRY
+            EXEC sp_executesql @SQLDrop;
+        END TRY
+        BEGIN CATCH
+            PRINT 'Error dropping masking for column: ' + @CurrSchema + '.' + @CurrTable + '.' + @CurrColumn + '. Error: ' + ERROR_MESSAGE();
+        END CATCH;
+
+        -- Fetch next column
+        FETCH NEXT FROM UnmaskCursor INTO @CurrSchema, @CurrTable, @CurrColumn;
+    END
+
+    CLOSE UnmaskCursor;
+    DEALLOCATE UnmaskCursor;
+
+    IF @Verbose = 1
+        PRINT 'Masking dropped for specified columns.';
+END
+ 
+
+
+END
+GO
+
+
+Drop Table IF EXISTS ##TempColumnsMaster,  #T#empmaskedMaster
+
+set nocount off
