@@ -1,0 +1,44 @@
+ 
+
+ EXEC ADMIN..SP_DATAMASKING
+ @DatabaseName = 'TESTDB',
+ @Mode = 'MASK', --'IDENTIFY' TO IDENTIFY PII TABLE/COLUMNS. 'MASKEDTABLES' CHECK MASKED TABLES. 'MASK' BEGIN THE MASKING PROCESS.
+ @Confirm = 1,
+ @SelectedColumns = 'ALL' -- OR FOR SPECIFIC COLUMNS @SelectedColumns = 'EMAIL,PHONE'
+ --@SelectedColumns = 'EMAIL,PHONEnUMBER'
+
+ use testdb
+;
+exec as user = 'accounting'
+select * from users
+revert;
+
+ALTER TABLE testdb.[dbo].[Users] ALTER COLUMN [CreditCardNumber] DROP MASKED  ;
+ALTER TABLE testdb.[dbo].[Users] ALTER COLUMN [Email] DROP MASKED  			  ;
+ALTER TABLE testdb.[dbo].[Users] ALTER COLUMN [PhoneNumber] DROP 		MASKED  	  ;
+ALTER TABLE testdb.[dbo].[Users] ALTER COLUMN [SSN] DROP MASKED  			  ;
+
+EXEC ADMIN..SP_DATAMASKING
+    @DatabaseName = 'TESTDB',
+    @Mode = 'DROP', -- 'DROP' mode to remove all masking
+    @Confirm = 1,   -- Confirmation required
+    @Verbose = 1;   -- Optional: Print detailed actions
+
+--For specific column
+	EXEC ADMIN..SP_DATAMASKING
+    @DatabaseName = 'TESTDB',
+    @Mode = 'DROP',   -- Drop masking
+    @Confirm = 1,     -- Confirmation required
+    @SchemaName = 'dbo',  -- Specify the schema (optional)
+    @TableName = 'Users', -- Specify the table (optional)
+    @Verbose = 1;         -- Print detailed actions
+
+--FOR SPECIFIC COLUMNS 
+EXEC SP_DATAMASKING
+    @DatabaseName = 'TestDB',
+    @Mode = 'DROP',
+	    @SchemaName = 'dbo',  -- Specify the schema (optional)
+    @TableName = 'MaskingLog', -- Specify the table (optional)
+    @SelectedColumns = 'Email,PhoneNumber',
+    @Verbose = 1,
+	@Confirm = 1;
