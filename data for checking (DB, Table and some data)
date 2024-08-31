@@ -1,0 +1,25 @@
+CREATE DATABASE TestDB;
+GO
+
+USE TestDB;
+GO
+
+-- Create a sample table to work with
+CREATE TABLE dbo.Users (
+    UserID INT IDENTITY PRIMARY KEY,
+    FirstName NVARCHAR(50),
+    LastName NVARCHAR(50),
+    Email NVARCHAR(255),
+    PhoneNumber NVARCHAR(15),
+    SSN CHAR(11),
+    CreditCardNumber CHAR(16)
+);
+GO
+
+-- Insert some sample data
+INSERT INTO dbo.Users (FirstName, LastName, Email, PhoneNumber, SSN, CreditCardNumber)
+VALUES 
+('John', 'Doe', 'john.doe@example.com', '555-1234', '123-45-6789', '4111111111111111'),
+('Jane', 'Smith', 'jane.smith@example.com', '555-5678', '987-65-4321', '4222222222222222'),
+('Alice', 'Jones', 'alice.jones@example.com', '555-8765', '111-22-3333', '4333333333333333');
+GO
