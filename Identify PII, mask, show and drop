@@ -1,3 +1,57 @@
+/*
+SP_DATAMASKING: A Comprehensive Dynamic Data Masking Tool for SQL Server
+By: Henok Teka
+Overview:
+------------
+The `SP_DATAMASKING` stored procedure is designed to streamline and automate the process of identifying, applying, 
+and managing dynamic data masking in SQL Server databases. This tool is handy for environments where 
+data protection and privacy are paramount, allowing database administrators to easily mask sensitive data (e.g., PII) 
+across multiple tables and databases.
+
+Key Features:
+------------
+1. **Identify PII Columns**:
+   - Automatically scans your database to identify columns that potentially contain Personally Identifiable Information (PII), 
+     such as SSN, email, phone numbers, and credit card details.
+
+2. **Check Masked Tables**:
+   - Provides a report of all tables and columns in the database where dynamic data masking is currently applied, helping to ensure 
+     that sensitive data is adequately protected.
+
+3. **Apply Masking**:
+   - Allows for targeted or comprehensive masking across your database. Mask specific columns in specific tables, or apply masking across 
+     all PII-related columns in the entire database with a single command.
+
+4. **Drop Masking**:
+   - Easily remove masking from specific columns, tables, or even across the entire database. This feature is flexible enough to handle user 
+     preferences, whether dropping masking for a few columns or cleaning up all masked data.
+
+Usage Scenarios:
+------------
+- **Security and Compliance**: Ideal for environments that need to adhere to data protection regulations (e.g., GDPR, HIPAA), ensuring that 
+    sensitive data is masked appropriately.
+- **Data Privacy**: Useful in development and testing environments where real data might be used but must be protected from unauthorized access.
+- **Flexible Management**: Provides a streamlined approach to managing dynamic data masking, making it easier to apply or remove masking as data 
+    protection needs to evolve.
+
+How to Use:
+------------
+The stored procedure can be executed from any database (e.g., master) while targeting a different database where the data resides. It supports 
+various modes (IDENTIFY, MASKEDTABLES, MASK, DROP) to manage your dynamic data masking needs efficiently. Refer to the usage guide below for 
+detailed examples and command syntax.
+
+Contribution:
+------------
+We welcome contributions to enhance the functionality of this stored procedure. Whether you're improving the masking logic, adding new features, 
+or fixing bugs, your input is valuable to this project. Please submit your pull requests or open issues for discussion.
+
+License:
+------------
+This project is licensed under the MIT License. Feel free to use, modify, and distribute this tool in your projects.
+
+*/
+
+
 CREATE OR ALTER PROC SP_DATAMASKING
 (@DatabaseName NVARCHAR(30),
 @Confirm bit = 0,
@@ -44,7 +98,7 @@ END
 
 Drop Table IF EXISTS ##TempColumnsMaster,  #T#empmaskedMaster
 
--- Create a temp table in master
+-- Create a temp table in master (or current database where the SP is executed.
 CREATE TABLE ##TempColumnsMaster (
     TABLE_SCHEMA NVARCHAR(128),
     TABLE_NAME NVARCHAR(128),
@@ -428,4 +482,4 @@ GO
 
 Drop Table IF EXISTS ##TempColumnsMaster,  #T#empmaskedMaster
 
-set nocount off
+SET NOCOUNT OFF
